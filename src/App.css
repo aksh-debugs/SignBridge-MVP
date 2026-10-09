@@ -736,3 +736,86 @@ button:focus-visible {
     line-height: 1.6;
   }
 }
+.history-search {
+  margin-top: 18px;
+  margin-bottom: 16px;
+  max-width: 520px;
+}
+
+.history-search input {
+  width: 100%;
+  min-height: 43px;
+  padding: 10px 12px;
+  border: 1px solid #dfe6ef;
+  border-radius: 9px;
+  background: #fff;
+  color: #23344a;
+  font-size: 12px;
+}
+
+.history-actions,
+.listening-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.listening-controls {
+  padding: 15px 0;
+}
+
+.listening-controls .demo-notice {
+  flex-basis: 100%;
+  max-width: 100%;
+  margin: 0 0 6px;
+}
+
+.listening-status {
+  color: #64768a;
+  font-size: 12px;
+}
+
+.interim-caption {
+  flex-basis: 100%;
+  padding: 13px;
+  border: 1px dashed #b5c9e6;
+  border-radius: 10px;
+  background: #f4f8ff;
+}
+
+.interim-caption strong {
+  font-size: 11px;
+  color: #315985;
+}
+
+.interim-caption p {
+  margin: 7px 0 0;
+  color: #344860;
+  line-height: 1.6;
+}
+
+.incoming-message {
+  background: #f8fafc;
+  border-color: #dce4ed;
+}
+
+.large-message-list .message-bubble > p {
+  font-size: clamp(23px, 4vw, 34px);
+  line-height: 1.45;
+}
+
+.audience-button {
+  margin-top: 15px;
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  .history-actions {
+    width: 100%;
+  }
+
+  .history-actions button {
+    flex: 1;
+  }
+}

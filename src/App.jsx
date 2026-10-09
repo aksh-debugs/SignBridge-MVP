@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./App.css";
+
+const STORAGE_KEY = "signbridge-history-v1";
 
 const modes = [
   { id: "direct", icon: "💬", name: "One-to-one" },
@@ -10,23 +12,53 @@ const modes = [
   { id: "interpreter", icon: "🤝", name: "Interpreter support" },
 ];
 
-const quickPhrases = [
+const phrases = [
   "Please speak slowly.",
   "Please type your message.",
   "I need some help.",
   "Could you repeat that?",
   "I need an interpreter.",
+  "Please wait a moment.",
+  "I do not understand.",
   "Thank you.",
+];
+
+const visualPhrases = [
+  ["🆘", "I need help."],
+  ["💧", "I need water."],
+  ["💊", "I need medicine."],
+  ["🏥", "I need medical assistance."],
+  ["⏳", "Please wait a moment."],
+  ["✍️", "Please write it down."],
 ];
 
 const titles = {
   direct: ["One-to-one conversation", "Communicate in the way that works for you."],
   "send-group": ["Speak to a group", "Prepare a message everyone can see or hear."],
-  "listen-group": ["Listen to a group", "Follow the conversation with accessible messages."],
+  "listen-group": ["Listen to a group", "Follow speech through captions where supported."],
   remote: ["Remote conversation", "Communicate with someone in another location."],
-  history: ["Conversation history", "Review the conversations you choose to save."],
-  interpreter: ["Interpreter support", "Explore interpreter assistance and the demo booking flow."],
+  history: ["Conversation history", "Review conversations you choose to save."],
+  interpreter: ["Interpreter support", "Explore interpreter assistance and demo booking."],
 };
+
+const languageCodes = {
+  English: "en-IN",
+  Hindi: "hi-IN",
+  Telugu: "te-IN",
+};
+
+function newId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function readHistory() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    return Array.isArray(saved) ? saved : [];
+  } catch {
+    return [];
+  }
+}
 
 function App() {
   const [mode, setMode] = useState("direct");
@@ -35,35 +67,34 @@ function App() {
   const [replyAs, setReplyAs] = useState("Visual");
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState([]);
-  const [history, setHistory] = useState([]);
-  const [notice, setNotice] = useState(
-    "Your communication choices can change at any time."
-  );
+  const [history, setHistory] = useState(readHistory);
+  const [search, setSearch] = useState("");
+  const [notice, setNotice] = useState("Choose how you want to communicate.");
+  const [listening, setListening] = useState(false);
+  const [interim, setInterim] = useState("");
+  const [largeDisplay, setLargeDisplay] = useState(false);
+  const recognitionRef = useRef(null);
 
-  function sendMessage(event) {
-    event.preventDefault();
-
-    if (!draft.trim()) {
-      setNotice("Enter a message or choose a quick phrase first.");
-      return;
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+    } catch {
+      setNotice("Browser storage is unavailable. This change may not persist.");
     }
+  }, [history]);
 
-    const message = {
-      id: `${Date.now()}-${Math.random()}`,
-      text: draft.trim(),
-      method: replyAs,
-      time: new Date().toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
+  useEffect(() => {
+    return () => {
+      try {
+        recognitionRef.current?.abort();
+      } catch {
+        // Recognition may already have stopped.
+      }
+      window.speechSynthesis?.cancel();
     };
+  }, []);
 
-    setMessages((previous) => [...previous, message]);
-    setDraft("");
-    setNotice("Message added to this local preview.");
-  }
-
-  function speakMessage(text) {
+  function speak(text) {
     if (!("speechSynthesis" in window)) {
       setNotice("Speech output is not supported by this browser.");
       return;
@@ -72,35 +103,218 @@ function App() {
     window.speechSynthesis.cancel();
 
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang =
-      language === "Hindi"
-        ? "hi-IN"
-        : language === "Telugu"
-          ? "te-IN"
-          : "en-IN";
+    utterance.lang = languageCodes[language] || "en-IN";
+
+    utterance.onerror = () => {
+      setNotice("Speech playback failed. Please try again.");
+    };
 
     window.speechSynthesis.speak(utterance);
-    setNotice("Playing speech output. Voice availability depends on your browser.");
+    setNotice("Playing speech. Voice availability depends on your browser.");
   }
 
-  function saveConversation() {
-    if (messages.length === 0) {
-      setNotice("Add a message before saving this conversation.");
+  function startListening() {
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      setNotice(
+        "Live speech recognition is unsupported here. Use typing or another compatible browser."
+      );
       return;
     }
 
-    const savedConversation = {
-      id: Date.now(),
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch {
+        // Previous recognition may already be closed.
+      }
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = languageCodes[language] || "en-IN";
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
+    recognition.onstart = () => {
+      setListening(true);
+      setNotice("Microphone active. Please ask people to speak one at a time.");
+    };
+
+    recognition.onresult = (event) => {
+      let finalText = "";
+      let interimText = "";
+
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const result = event.results[i];
+        const text = result[0]?.transcript || "";
+
+        if (result.isFinal) {
+          finalText += `${text} `;
+        } else {
+          interimText += text;
+        }
+      }
+
+      setInterim(interimText);
+
+      if (finalText.trim()) {
+        setMessages((previous) => [
+          ...previous,
+          {
+            id: newId(),
+            text: finalText.trim(),
+            sender: "Speaker not identified",
+            method: "Browser speech recognition",
+            time: new Date().toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+            direction: "incoming",
+          },
+        ]);
+        setNotice("Caption received. Check the wording before relying on it.");
+      }
+    };
+
+    recognition.onerror = (event) => {
+      setListening(false);
+      setInterim("");
+
+      const messagesByError = {
+        "not-allowed": "Microphone permission denied. Check browser permissions.",
+        "no-speech": "No speech detected. Try again closer to the speaker.",
+        "audio-capture": "No working microphone was detected.",
+        network: "The browser speech service reported a network problem.",
+      };
+
+      setNotice(
+        messagesByError[event.error] ||
+          `Speech recognition error: ${event.error}. You can retry or type instead.`
+      );
+    };
+
+    recognition.onend = () => {
+      setListening(false);
+      setInterim("");
+      recognitionRef.current = null;
+    };
+
+    recognitionRef.current = recognition;
+
+    try {
+      recognition.start();
+    } catch {
+      recognitionRef.current = null;
+      setListening(false);
+      setNotice("Could not start listening. Stop any previous session and retry.");
+    }
+  }
+
+  function stopListening() {
+    try {
+      recognitionRef.current?.stop();
+    } catch {
+      // Recognition may already be stopped.
+    }
+
+    setListening(false);
+    setInterim("");
+    setNotice("Listening stopped. Review the captions.");
+  }
+
+  function addMessage(event) {
+    event.preventDefault();
+
+    const text = draft.trim();
+
+    if (!text) {
+      setNotice("Enter a message or choose a phrase first.");
+      return;
+    }
+
+    setMessages((previous) => [
+      ...previous,
+      {
+        id: newId(),
+        text,
+        sender: "You",
+        method: replyAs,
+        time: new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+        direction: "outgoing",
+      },
+    ]);
+
+    setDraft("");
+    setLargeDisplay(mode === "send-group");
+    setNotice(
+      mode === "send-group"
+        ? "Message prepared for the group display. Play aloud if needed."
+        : "Message added to this local conversation."
+    );
+  }
+
+  function saveConversation() {
+    if (!messages.length) {
+      setNotice("Add a message before saving the conversation.");
+      return;
+    }
+
+    const conversation = {
+      id: newId(),
       title: messages[0].text.slice(0, 55),
-      date: new Date().toLocaleString(),
+      savedAt: new Date().toISOString(),
+      language,
       messages,
     };
 
-    setHistory((previous) => [savedConversation, ...previous]);
-    setNotice("Conversation saved for this session.");
+    setHistory((previous) => [conversation, ...previous]);
+    setNotice("Conversation saved in this browser.");
   }
 
-  const currentTitle = titles[mode];
+  function exportConversation(conversation) {
+    try {
+      const blob = new Blob([JSON.stringify(conversation, null, 2)], {
+        type: "application/json",
+      });
+
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "signbridge-conversation.json";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+
+      setNotice("Conversation export started.");
+    } catch {
+      setNotice("Export failed. Please try again.");
+    }
+  }
+
+  function deleteConversation(id) {
+    setHistory((previous) => previous.filter((item) => item.id !== id));
+    setNotice("Conversation deleted from this browser.");
+  }
+
+  const filteredHistory = history.filter((conversation) => {
+    const term = search.trim().toLowerCase();
+
+    return (
+      !term ||
+      conversation.title?.toLowerCase().includes(term) ||
+      conversation.messages?.some((message) =>
+        message.text.toLowerCase().includes(term)
+      )
+    );
+  });
+
+  const title = titles[mode];
 
   return (
     <div className="app-shell">
@@ -120,15 +334,15 @@ function App() {
             <button
               key={item.id}
               className={`nav-item ${mode === item.id ? "active" : ""}`}
+              aria-current={mode === item.id ? "page" : undefined}
               onClick={() => {
+                if (item.id !== "listen-group" && listening) stopListening();
                 setMode(item.id);
+                setLargeDisplay(false);
                 setNotice("Choose the communication method that suits you.");
               }}
-              aria-current={mode === item.id ? "page" : undefined}
             >
-              <span className="nav-icon" aria-hidden="true">
-                {item.icon}
-              </span>
+              <span className="nav-icon" aria-hidden="true">{item.icon}</span>
               <span>{item.name}</span>
             </button>
           ))}
@@ -142,15 +356,13 @@ function App() {
               <p>Review before sharing</p>
             </div>
           </div>
-          <p className="sidebar-footnote">
-            Built for different communication needs.
-          </p>
+          <p className="sidebar-footnote">Built for different communication needs.</p>
         </div>
       </aside>
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumb">Workspace / {currentTitle[0]}</div>
+          <div className="breadcrumb">Workspace / {title[0]}</div>
           <span className="prototype-tag">
             <span className="status-dot" />
             Development preview
@@ -161,12 +373,10 @@ function App() {
           <div className="welcome-row">
             <div>
               <p className="eyebrow">ONE ADAPTIVE PLATFORM</p>
-              <h2>{currentTitle[0]}</h2>
-              <p className="subtitle">{currentTitle[1]}</p>
+              <h2>{title[0]}</h2>
+              <p className="subtitle">{title[1]}</p>
             </div>
-            <div className="welcome-symbol" aria-hidden="true">
-              ↔
-            </div>
+            <div className="welcome-symbol" aria-hidden="true">↔</div>
           </div>
 
           <section className="preferences-card">
@@ -180,11 +390,8 @@ function App() {
 
             <div className="preference-grid">
               <label className="field">
-                <span>Preferred language</span>
-                <select
-                  value={language}
-                  onChange={(event) => setLanguage(event.target.value)}
-                >
+                <span>Preferred speech language</span>
+                <select value={language} onChange={(e) => setLanguage(e.target.value)}>
                   <option>English</option>
                   <option>Hindi</option>
                   <option>Telugu</option>
@@ -193,10 +400,7 @@ function App() {
 
               <label className="field">
                 <span>I want to receive messages as</span>
-                <select
-                  value={receiveAs}
-                  onChange={(event) => setReceiveAs(event.target.value)}
-                >
+                <select value={receiveAs} onChange={(e) => setReceiveAs(e.target.value)}>
                   <option>Text</option>
                   <option>Visual</option>
                   <option>Audio</option>
@@ -206,10 +410,7 @@ function App() {
 
               <label className="field">
                 <span>I want to reply using</span>
-                <select
-                  value={replyAs}
-                  onChange={(event) => setReplyAs(event.target.value)}
-                >
+                <select value={replyAs} onChange={(e) => setReplyAs(e.target.value)}>
                   <option>Visual</option>
                   <option>Type</option>
                   <option>Speak</option>
@@ -217,6 +418,11 @@ function App() {
                 </select>
               </label>
             </div>
+
+            <p className="demo-notice">
+              Language selection configures browser speech. Automatic
+              translation is not connected yet.
+            </p>
           </section>
 
           {mode === "history" ? (
@@ -224,68 +430,76 @@ function App() {
               <div className="section-heading">
                 <div>
                   <h3>Saved conversations</h3>
-                  <p>Only conversations saved in this current session appear here.</p>
+                  <p>Stored in this browser, not synced to other devices.</p>
                 </div>
               </div>
 
-              {history.length === 0 ? (
+              <label className="field history-search">
+                <span>Search saved conversations</span>
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search a phrase or topic..."
+                />
+              </label>
+
+              {filteredHistory.length === 0 ? (
                 <div className="empty-state">
                   <span>🕘</span>
-                  <h3>No saved conversations yet</h3>
-                  <p>Start a conversation, then choose Save conversation.</p>
+                  <h3>No matching saved conversations</h3>
+                  <p>Save a conversation first, or try another search.</p>
                 </div>
               ) : (
                 <div className="history-list">
-                  {history.map((conversation) => (
+                  {filteredHistory.map((conversation) => (
                     <article className="history-item" key={conversation.id}>
                       <div>
                         <strong>{conversation.title}</strong>
-                        <p>{conversation.date}</p>
+                        <p>{new Date(conversation.savedAt).toLocaleString()}</p>
                         <span>{conversation.messages.length} message(s)</span>
                       </div>
-                      <button
-                        className="secondary-button"
-                        onClick={() => {
-                          setMessages(conversation.messages);
-                          setMode("direct");
-                          setNotice("Saved conversation reopened.");
-                        }}
-                      >
-                        Reopen
-                      </button>
+                      <div className="history-actions">
+                        <button
+                          className="secondary-button"
+                          onClick={() => {
+                            setMessages(conversation.messages);
+                            setMode("direct");
+                            setNotice("Saved conversation reopened.");
+                          }}
+                        >
+                          Reopen
+                        </button>
+                        <button
+                          className="secondary-button"
+                          onClick={() => exportConversation(conversation)}
+                        >
+                          Export
+                        </button>
+                        <button
+                          className="secondary-button"
+                          onClick={() => deleteConversation(conversation.id)}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </article>
                   ))}
                 </div>
               )}
             </section>
-          ) : mode === "interpreter" ? (
+          ) : mode === "remote" || mode === "interpreter" ? (
             <section className="panel feature-panel">
-              <div className="feature-icon">🤝</div>
-              <p className="eyebrow">HUMAN SUPPORT</p>
-              <h3>Interpreter assistance</h3>
-              <p>
-                The planned booking flow will show language preferences,
-                session duration, published reference pricing and a simulated
-                checkout.
+              <div className="feature-icon">{mode === "remote" ? "🌐" : "🤝"}</div>
+              <p className="eyebrow">
+                {mode === "remote" ? "REMOTE COMMUNICATION" : "HUMAN SUPPORT"}
               </p>
+              <h3>{title[0]}</h3>
+              <p>{title[1]}</p>
               <div className="demo-notice">
-                Demo only: interpreter availability and real bookings are not
-                connected in this development preview.
-              </div>
-            </section>
-          ) : mode === "remote" ? (
-            <section className="panel feature-panel">
-              <div className="feature-icon">🌐</div>
-              <p className="eyebrow">COMMUNICATE FROM ANYWHERE</p>
-              <h3>Remote conversation</h3>
-              <p>
-                The planned remote mode will allow another person to join
-                through a browser link without installing SignBridge.
-              </p>
-              <div className="demo-notice">
-                Remote messaging is not connected yet. We will add and test
-                the real session service before presenting this feature as
-                working.
+                {mode === "remote"
+                  ? "Remote sessions are not connected yet. Messages in this preview remain local."
+                  : "Interpreter booking and simulated payment will be implemented separately. No real service is connected."}
               </div>
             </section>
           ) : (
@@ -302,21 +516,42 @@ function App() {
                     </h3>
                     <p>
                       {mode === "listen-group"
-                        ? "Live microphone transcription will be connected in a later step."
+                        ? "Capture speech as captions where your browser supports it."
                         : mode === "send-group"
-                          ? "Prepare one message for everyone to read or hear."
-                          : "Compose a message using your preferred method."}
+                          ? "Compose one message for everyone to read or hear."
+                          : "Prepare and review messages using your preferred method."}
                     </p>
                   </div>
-
-                  <span className="small-tag">Local preview</span>
+                  <span className="small-tag">
+                    {mode === "send-group" ? "Large-message mode" : "Local conversation"}
+                  </span>
                 </div>
 
                 {mode === "listen-group" && (
-                  <div className="demo-notice">
-                    Microphone transcription is not connected yet. This screen
-                    is the interface prototype; we will integrate and test the
-                    speech service separately.
+                  <div className="listening-controls">
+                    <div className="demo-notice">
+                      Browser support varies. Audio may be processed by an
+                      external speech service. Get appropriate consent before
+                      capturing group speech.
+                    </div>
+
+                    <button
+                      className={listening ? "secondary-button" : "primary-button"}
+                      onClick={listening ? stopListening : startListening}
+                    >
+                      {listening ? "Stop listening" : "🎙 Start listening"}
+                    </button>
+
+                    <span className="listening-status" role="status">
+                      {listening ? "Microphone active" : "Microphone inactive"}
+                    </span>
+
+                    {interim && (
+                      <div className="interim-caption" aria-live="polite">
+                        <strong>Live caption (not final)</strong>
+                        <p>{interim}</p>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -324,23 +559,24 @@ function App() {
                   <div className="empty-state">
                     <span>💬</span>
                     <h3>Your conversation starts here</h3>
-                    <p>
-                      Choose a phrase below or prepare your own message.
-                    </p>
+                    <p>Choose a phrase below or prepare your own message.</p>
                   </div>
                 ) : (
-                  <div className="message-list" aria-live="polite">
+                  <div
+                    className={`message-list ${largeDisplay ? "large-message-list" : ""}`}
+                    aria-live="polite"
+                  >
                     {messages.map((message) => (
-                      <article className="message-bubble" key={message.id}>
+                      <article
+                        className={`message-bubble ${message.direction === "incoming" ? "incoming-message" : ""}`}
+                        key={message.id}
+                      >
                         <div className="message-meta">
-                          <span>You · {message.method}</span>
+                          <span>{message.sender} · {message.method}</span>
                           <span>{message.time}</span>
                         </div>
                         <p>{message.text}</p>
-                        <button
-                          className="text-button"
-                          onClick={() => speakMessage(message.text)}
-                        >
+                        <button className="text-button" onClick={() => speak(message.text)}>
                           🔊 Play aloud
                         </button>
                       </article>
@@ -348,7 +584,7 @@ function App() {
                   </div>
                 )}
 
-                <form className="composer" onSubmit={sendMessage}>
+                <form className="composer" onSubmit={addMessage}>
                   <label className="composer-label" htmlFor="message">
                     Write or edit your message
                   </label>
@@ -356,16 +592,15 @@ function App() {
                     id="message"
                     rows={3}
                     value={draft}
-                    onChange={(event) => setDraft(event.target.value)}
-                    placeholder="Type a message or select a phrase below..."
+                    onChange={(e) => setDraft(e.target.value)}
+                    placeholder="Type a message or choose a phrase below..."
                   />
-
                   <div className="composer-actions">
                     <span className="composer-hint">
-                      Review your words before sharing.
+                      Review your words before displaying or speaking them.
                     </span>
                     <button className="primary-button" type="submit">
-                      Add message →
+                      {mode === "send-group" ? "Display message →" : "Add message →"}
                     </button>
                   </div>
                 </form>
@@ -376,7 +611,7 @@ function App() {
                     <span className="small-tag">Quick Mode</span>
                   </div>
                   <div className="phrase-grid">
-                    {quickPhrases.map((phrase) => (
+                    {phrases.map((phrase) => (
                       <button
                         key={phrase}
                         className="phrase-button"
@@ -388,12 +623,36 @@ function App() {
                   </div>
                 </div>
 
+                <div className="quick-phrases">
+                  <div className="section-heading">
+                    <h3>Visual message builder</h3>
+                    <span className="small-tag">Tap to prepare</span>
+                  </div>
+                  <div className="phrase-grid">
+                    {visualPhrases.map(([icon, text]) => (
+                      <button
+                        key={text}
+                        className="phrase-button"
+                        onClick={() => setDraft(text)}
+                      >
+                        {icon} {text}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {mode === "send-group" && (
+                  <button
+                    className="secondary-button audience-button"
+                    onClick={() => setLargeDisplay((previous) => !previous)}
+                  >
+                    {largeDisplay ? "Return to normal view" : "Enlarge group message display"}
+                  </button>
+                )}
+
                 <div className="conversation-footer">
                   <p role="status">{notice}</p>
-                  <button
-                    className="secondary-button"
-                    onClick={saveConversation}
-                  >
+                  <button className="secondary-button" onClick={saveConversation}>
                     Save conversation
                   </button>
                 </div>
@@ -404,7 +663,7 @@ function App() {
                   <span>🛡️</span>
                   <div>
                     <h3>You stay in control</h3>
-                    <p>Review your message before sending it.</p>
+                    <p>Review messages and correct mistakes.</p>
                   </div>
                 </article>
                 <article className="mini-card">
