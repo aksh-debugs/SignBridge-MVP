@@ -1,0 +1,26 @@
+{
+  "rules": {
+    "rooms": {
+      "$roomId": {
+        "info": {
+          ".read": "auth != null && data.exists() && now < data.child('expiresAt').val()",
+          ".write": "auth != null && !data.exists() && newData.child('ownerUid').val() === auth.uid",
+          ".validate": "newData.hasChildren(['ownerUid', 'createdAt', 'expiresAt', 'status']) && newData.child('ownerUid').isString() && newData.child('createdAt').isNumber() && newData.child('expiresAt').isNumber() && newData.child('status').val() === 'active'"
+        },
+        "members": {
+          "$uid": {
+            ".read": "auth != null && auth.uid === $uid",
+            ".write": "auth != null && auth.uid === $uid && newData.val() === true && (!data.exists() || data.val() === true)"
+          }
+        },
+        "messages": {
+          ".read": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).val() === true && now < root.child('rooms').child($roomId).child('info').child('expiresAt').val()",
+          "$messageId": {
+            ".write": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).val() === true && now < root.child('rooms').child($roomId).child('info').child('expiresAt').val()",
+            ".validate": "newData.hasChildren(['text', 'sender', 'senderUid', 'createdAt']) && newData.child('text').isString() && newData.child('text').val().length <= 2000 && newData.child('sender').isString() && newData.child('sender').val().length <= 40 && newData.child('senderUid').val() === auth.uid && newData.child('createdAt').isNumber()"
+          }
+        }
+      }
+    }
+  }
+}
